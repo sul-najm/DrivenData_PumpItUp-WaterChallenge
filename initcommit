@@ -1,0 +1,416 @@
+#import necessary libraries
+from IPython.core.display import display, HTML
+
+import matplotlib
+import matplotlib.pyplot as plt
+%matplotlib inline
+from datetime import datetime
+
+import pandas as pd
+import numpy as np
+import itertools
+from collections import defaultdict
+
+#define important functions to be used throughout analysis
+from sklearn import linear_model
+from sklearn.model_selection import cross_val_score, cross_val_predict, cross_validate
+from sklearn.metrics import confusion_matrix, accuracy_score
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.model_selection import KFold
+
+def plot_confusion_matrix(cm, classes, normalize=False, title='Confusion matrix',cmap=plt.cm.Blues):
+    """
+    This function prints and plots the confusion matrix.
+    Normalization can be applied by setting `normalize=True`.
+    """
+    plt.imshow(cm, interpolation='nearest', cmap=cmap, aspect='auto')
+    plt.title(title)
+    plt.colorbar()
+    tick_marks = np.arange(len(classes))
+    
+    plt.xticks(tick_marks, classes.tolist(), rotation=45)
+    plt.yticks(tick_marks, classes.tolist())
+    
+    thresh = cm.max() / 2.
+    for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+        plt.text(j, i, cm[i, j],
+                 horizontalalignment="center",
+                 verticalalignment='center',
+                 color="white" if cm[i, j] > thresh else "black")
+
+    plt.xlim(-0.5, len(classes)-0.5)
+    plt.ylim(len(classes)-0.5, -0.5)
+    plt.tight_layout()
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+    
+def train_model(X,y, model, show_figures=True): 
+    y_pred = cross_val_predict(model, X, y, cv=5)
+    conf_mat = confusion_matrix(y, y_pred)
+    score = accuracy_score(y,y_pred)
+    print("Training Accuracy = {0:.4f}".format(score))
+    if show_figures:
+        plot_confusion_matrix(conf_mat, y.unique())
+        model.fit(X, y)
+#         get_feature_importance(model, X.columns, n_features=25)
+    return model, score
+
+def get_feature_importance(clf, features, n_features):
+    feature_importance = abs(clf.coef_[0])
+    feature_importance = 100.0 * (feature_importance / feature_importance.max())
+    sorted_idx = np.argsort(feature_importance)[:n_features]
+    pos = np.arange(sorted_idx.shape[0]) + .5
+
+    featfig = plt.figure(figsize=(10,10))
+    featfig.suptitle(str(n_features) + " Most important features")
+    featax = featfig.add_subplot(1, 1, 1)
+    featax.barh(pos, feature_importance[sorted_idx], align='center')
+    featax.set_yticks(pos)
+    featax.set_xticks([])
+    featax.set_yticklabels(np.array(features)[sorted_idx], fontsize=15)
+    featax.set_xlabel('Relative Feature Importance', fontsize=15)
+    plt.show()
+    
+def remove_outlier(df_in, col_name):
+    q1 = df_in[col_name].quantile(0.25)
+    q3 = df_in[col_name].quantile(0.75)
+    iqr = q3-q1 #Interquartile range
+    fence_low  = q1-1.5*iqr
+    fence_high = q3+1.5*iqr
+    df_out = df_in.loc[(df_in[col_name] > fence_low) & (df_in[col_name] < fence_high)]
+    print("{} outliers removed from {}".format(len(df_in)-len(df_out),col_name))
+    return df_out
+
+def count_outliers(df_in, col_name):
+    q1 = df_in[col_name].quantile(0.25)
+    q3 = df_in[col_name].quantile(0.75)
+    iqr = q3-q1 #Interquartile range
+    fence_low  = q1-1.5*iqr
+    fence_high = q3+1.5*iqr
+    df_out = df_in.loc[(df_in[col_name] > fence_low) & (df_in[col_name] < fence_high)]
+    out_sum = ((df_in[col_name] < (q1 - 1.5 * iqr)) | (df_in[col_name] > (q3 + 1.5 * iqr))).sum()
+    print("{} outliers in {}".format(out_sum,col_name))
+    return df_out
+    
+#import datasets
+train_feat = pd.read_csv("train_features.csv", delimiter=",", decimal=".")
+train_labels = pd.read_csv("train_labels.csv", delimiter=",", decimal=".")
+test = pd.read_csv("test_set.csv", delimiter=",", decimal=".")
+
+#create a train/test column to identify which dataset each row belongs to
+train_feat["train_or_test"] = "train"
+test["train_or_test"] = "test"
+
+#append train and test so that data cleaning will be performed once for both datasets
+dataset = train_feat.append(test)
+
+pd.options.display.max_columns = dataset.shape[1]
+dataset.describe()
+
+vars_to_drop = ["wpt_name", "num_private", "region_code", "district_code", "ward", "public_meeting", "recorded_by", "scheme_name", "extraction_type", "extraction_type_group", "management_group", "payment", "quality_group", "quantity_group", "source_type", "source_class", "waterpoint_type"]
+
+for i in vars_to_drop:
+    dataset = dataset.drop(i, axis=1)
+    
+dataset.head()
+
+#create a list of variables that are supposed to be categorical, and convert them
+categorical = ["funder", "installer", "basin", "region", "scheme_management", "permit", "extraction_type_class", "management", "payment_type", "water_quality", "quantity", "source", "waterpoint_type_group"]
+
+dataset[categorical] = dataset[categorical].astype("category")
+
+#convert date_recorded to a datetime object so that information can be extracted from it later on
+dataset["date_recorded"] = pd.to_datetime(dataset["date_recorded"])
+
+dataset.dtypes
+
+#this gives us nulls in categorical columns
+dataset.isnull().sum()
+
+
+# change null values to "missing"
+dataset['funder'] = dataset['funder'].cat.add_categories('missing')
+dataset['funder'].fillna('missing', inplace =True) 
+
+dataset['installer'] = dataset['installer'].cat.add_categories('missing')
+dataset['installer'].fillna('missing', inplace =True) 
+
+dataset['scheme_management'] = dataset['scheme_management'].cat.add_categories('missing')
+dataset['scheme_management'].fillna('missing', inplace =True) 
+
+dataset['permit'] = dataset['permit'].cat.add_categories('missing')
+dataset['permit'].fillna('missing', inplace =True)
+
+num_colums = ['int16', 'int32', 'int64', 'float16', 'float32', 'float64']
+numerical_columns = list(dataset.select_dtypes(include=num_colums).columns)
+
+(dataset[numerical_columns] == 0).astype(int).sum(axis=0)/len(dataset)
+
+
+#second attempt - keep long/lat and impute mean for gps_height and population 0s based on subvillage:
+dataset.drop(["amount_tsh"], axis=1, inplace=True)
+
+#first make latitude = to 0 when longitude = 0 (currently it is 0.0000002 in the dataset):
+dataset["lat_replaced_0s"] = dataset["latitude"]
+dataset['lat_replaced_0s'].loc[dataset['latitude'] == 0] = 0
+dataset.drop(["latitude"], axis=1, inplace=True)
+
+
+#convert 0s to NAs for code below to work
+cols_to_impute = ["longitude", "lat_replaced_0s", "gps_height", "population"]
+for i in cols_to_impute:
+    dataset[i].replace(0, np.nan, inplace=True)
+    
+#impute mean for columns according to mean of subvillage
+for i in cols_to_impute:
+    dataset[i] = dataset[i].fillna(dataset.groupby("subvillage")[i].transform('mean'))
+    dataset[i] = dataset[i].fillna(dataset[i].mean())
+    
+dataset.drop(["subvillage"], axis=1, inplace=True)
+
+#calculate median for construction_year
+median_constr_yr = dataset['construction_year'].median(skipna=True)
+
+#impute median for 0 values in construction_year
+dataset['construction_year']=dataset.construction_year.mask(dataset.construction_year == 0,median_constr_yr)
+
+#ensure that 0 values have been imputed for certain variables
+num_colums = ['int16', 'int32', 'int64', 'float16', 'float32', 'float64']
+numerical_columns = list(dataset.select_dtypes(include=num_colums).columns)
+(dataset[numerical_columns] == 0).astype(int).sum(axis=0)/len(dataset)
+
+#ensure all null values have been removed
+dataset.isnull().sum()
+
+#remove outliers only in the training data
+outlier_free_dataset = dataset[dataset["train_or_test"]=="train"]
+
+for (columnName, _) in outlier_free_dataset.iteritems():
+    if columnName in ["longitude", "lat_replaced_0s", "gps_height", "population", "construction_year"]: #numeric columns
+        print("Analyzing outliers of column: {}".format(columnName))
+        plt.figure(figsize=(10,10))
+        outlier_free_dataset.boxplot([columnName], grid=False, fontsize=15, whis=3)
+        plt.show()
+
+#impute fence high for outliers
+q1 = outlier_free_dataset["population"].quantile(0.25)
+q3 = outlier_free_dataset["population"].quantile(0.75)
+iqr = q3-q1 #Interquartile range
+fence_low  = q1-1.5*iqr
+fence_high = q3+1.5*iqr
+
+print(fence_low)
+print(fence_high) 
+
+outlier_free_dataset["population"] = outlier_free_dataset["population"].map(lambda x:
+                                                                           fence_low if x < fence_low else 
+                                                                           (fence_high if x > fence_high else x))
+                                                                           
+# separate cleaned train set and test set
+test_set_cleaned = dataset[dataset["train_or_test"] == "test"]
+train_set_cleaned = outlier_free_dataset
+
+#append cleaned train set and test set
+cleaned_dataset = train_set_cleaned.append(test_set_cleaned)
+
+#add the "Other" category to funder categories since it currently does not exist
+cleaned_dataset['funder'] = cleaned_dataset['funder'].cat.add_categories('Other')
+
+#Set values equal to "Other"
+funder_categories = ["missing", "Government of Tanzania", "Danida", "Hesawa", "Rwssp", "World Bank", "Kkkt", "World Vision", "Unicef", "Tasaf", "Dhv", "District Council"]
+    
+cleaned_dataset.loc[~cleaned_dataset["funder"].isin(funder_categories), "funder"] = "Other"
+
+#Check that it worked
+cleaned_dataset["funder"].unique()
+
+#add the "Other" category to installer categories since it currently does not exist
+cleaned_dataset['installer'] = cleaned_dataset['installer'].cat.add_categories('Other')
+
+#Set values equal to "Other"
+installer_categories = ["missing", "DWE", "Government", "RWE", "Commu", "DANIDA", "KKKT", "Hesawa", "0", "TCRS", "CES", "Central government", "DANID", "HESAWA"]
+    
+cleaned_dataset.loc[~cleaned_dataset["installer"].isin(installer_categories), "installer"] = "Other"
+
+#Check that it worked
+cleaned_dataset["installer"].unique()
+
+#Set values equal to "Other"
+scheme_categories = ["missing", "VWC", "WUG", "Water Authority", "WUA", "Water Board", "Parastatal", "Company", "Private operator"]
+    
+cleaned_dataset.loc[~cleaned_dataset["scheme_management"].isin(scheme_categories), "scheme_management"] = "Other"
+
+#Check that it worked
+cleaned_dataset["scheme_management"].unique()
+
+#feature creation - years of operation
+
+cleaned_dataset["recorded_year"] = cleaned_dataset["date_recorded"].dt.year
+
+cleaned_dataset["yrs_of_op"] = (cleaned_dataset["recorded_year"] - cleaned_dataset["construction_year"])
+
+df = cleaned_dataset.merge(train_labels, on='id')
+df1 = df.groupby(['lga','status_group']).count()
+
+dic_func = {}
+
+for row in df1['id'].groupby(level=0):
+    try:
+        functional = row[1].xs('functional', level=1)[0]
+    except KeyError:
+        functional = 0
+    try:
+        functional_repair = row[1].xs('functional needs repair', level=1)[0]
+    except KeyError:
+        functional_repair = 0
+    try:
+        nonfunctional = row[1].xs('non functional', level=1)[0]
+    except KeyError:
+        nonfunctional = 0
+    
+    total = functional + nonfunctional + functional_repair
+    
+    functional = (functional/total) * 100
+    functional_repair = (functional_repair/total) * 100
+    nonfunctional = (nonfunctional/total) * 100
+    
+    status = [functional,functional_repair,nonfunctional]
+    status.sort(reverse = True)
+    
+    if status[0] > status[1] * 1.3:
+        if status[0] == functional:
+            dic_func[row[0]] = 'functional'
+        elif status[0] == functional_repair:
+            dic_func[row[0]] = 'functional needs repair'
+        else:
+            dic_func[row[0]] = 'non functional'
+    else:
+        dic_func[row[0]] = 'unknown'
+        
+cleaned_dataset['lga_functionality'] = cleaned_dataset['lga'].map(lambda x: dic_func[x])
+cleaned_dataset[['lga_functionality','lga']]
+
+cleaned_dataset.drop(["lga"], axis=1, inplace=True)
+
+cleaned_dataset["lga_functionality"] = cleaned_dataset["lga_functionality"].astype("category")
+
+cleaned_dataset.dtypes
+
+from sklearn.preprocessing import OneHotEncoder, StandardScaler, MinMaxScaler
+
+categorical_cols = cleaned_dataset.columns[cleaned_dataset.dtypes=='category'].tolist()
+numerical_cols = cleaned_dataset.columns[cleaned_dataset.dtypes!='category'].tolist()
+
+numerical_cols.remove("id")
+numerical_cols.remove("date_recorded")
+numerical_cols.remove("train_or_test")
+numerical_cols.remove("construction_year")
+
+ohe = OneHotEncoder()
+std_scaler = StandardScaler()
+mms = MinMaxScaler()
+
+#make sure all values in the categorical columns are strings, so that OHE will work
+for i in categorical_cols:
+    cleaned_dataset[i] = cleaned_dataset[i].astype(str)
+    
+#convert back into category so that OHE will work
+for i in categorical_cols:
+    cleaned_dataset[i] = cleaned_dataset[i].astype("category")
+    
+#ensure all values in numerical columns are indeed numerical, so that normalizing will work
+for i in numerical_cols:
+    cleaned_dataset[i] = cleaned_dataset[i].astype(int)
+    
+dummified_dataset = pd.concat([cleaned_dataset['id'].reset_index(drop=True),
+                               cleaned_dataset['train_or_test'].reset_index(drop=True),
+                              cleaned_dataset['date_recorded'].reset_index(drop=True),
+                               cleaned_dataset['construction_year'].reset_index(drop=True),
+                               pd.DataFrame(mms.fit_transform(std_scaler.fit_transform(cleaned_dataset[numerical_cols])), columns=numerical_cols).reset_index(drop=True),                    
+                               pd.DataFrame(ohe.fit_transform(cleaned_dataset[categorical_cols]).toarray(), columns=ohe.get_feature_names(categorical_cols)).reset_index(drop=True)], sort=True, axis=1)
+ dummified_dataset.head()                              
+                             
+ #convert floats to ints
+dummified_dataset = dummified_dataset.iloc[:, :6].join(dummified_dataset.iloc[:, 6:].astype(int), sort=True)
+
+#split the dataset into train and test
+train_cleaned = dummified_dataset[dummified_dataset['train_or_test'] == "train"]
+test_cleaned = dummified_dataset[dummified_dataset['train_or_test'] == "test"]
+X_train = X_train.drop(['date_recorded', 'id'],axis=1)
+test_cleaned = test_cleaned.drop(['date_recorded', 'id', 'train_or_test'],axis=1)
+
+#Model Training 
+
+#Random Forest
+
+from sklearn.ensemble import RandomForestClassifier
+
+#start with the basic hyperparameters to get a baseline model
+rfc_model = RandomForestClassifier(n_estimators=100, 
+                               bootstrap = True,
+                                  max_features = 'sqrt')
+
+rfc_model.fit(X_train, y_train)
+
+rfc_fitted_model, score = train_model(X_train, y_train, rfc_model)
+
+sorted_idx = np.argsort(rfc_fitted_model.feature_importances_)[::-1][:45][::-1]
+
+plt.figure(figsize=(20,20))
+plt.barh(X_train.columns[sorted_idx], rfc_fitted_model.feature_importances_[sorted_idx], align='center')
+plt.title('Feature Importance', fontsize=16)
+plt.show()
+
+rfc_imp_vars = list(X_train.columns[sorted_idx])
+
+from sklearn.model_selection import RandomizedSearchCV
+
+# Number of trees in random forest
+n_estimators = [int(x) for x in np.linspace(start = 200, stop = 2000, num = 10)]
+# Number of features to consider at every split
+max_features = ['auto', 'sqrt']
+# Maximum number of levels in tree
+max_depth = [int(x) for x in np.linspace(1, 20, num = 1)]
+max_depth.append(None)
+# Minimum number of samples required to split a node
+min_samples_split = [2, 5, 10]
+# Minimum number of samples required at each leaf node
+min_samples_leaf = [1, 2, 4]
+# Method of selecting samples for training each tree
+bootstrap = [True, False]
+# Create the random grid
+random_grid = {'n_estimators': n_estimators,
+               'max_features': max_features,
+               'max_depth': max_depth,
+               'min_samples_split': min_samples_split,
+               'min_samples_leaf': min_samples_leaf,
+               'bootstrap': bootstrap}
+print(random_grid)
+
+# First create the base model to tune
+rf = RandomForestClassifier()
+# Random search of parameters, using 3 fold cross validation, 
+# search across 100 different combinations, and use all available cores
+rf_random = RandomizedSearchCV(estimator = rf, param_distributions = random_grid, n_iter = 100, cv = 3, verbose=2, random_state=42, n_jobs = -1)
+# Fit the random search model
+rf_random.fit(X_train[rfc_imp_vars], y_train)
+
+rf_random.best_params_
+rfc_model2 = RandomForestClassifier(n_estimators=1200, bootstrap = True, max_features = 'auto', min_samples_split = 2, min_samples_leaf = 2)
+rfc_model2.fit(X_train[rfc_imp_vars], y_train)
+rfc_fitted_model_2, score = train_model(X_train[rfc_imp_vars], y_train, rfc_model2)
+
+#Test Model
+X_test = test_cleaned[rfc_imp_vars]
+# Train the model using all the data
+final_model = rfc_model2
+final_model.fit(X_train[rfc_imp_vars], y_train)
+
+# Test prediction
+final_pred = final_model.predict(X_test)
+predictions = pd.DataFrame({'id':test['id'], 'status_group':final_pred})
+predictions.to_csv("well_predictions10.csv", index=False)
+
+
+
+
